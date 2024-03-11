@@ -1,2 +1,9 @@
 #!/bin/bash
-echo "This script should start your application"
+
+
+docker build -t khalid/backend:latest ./backend
+
+
+docker build -t khalid/frontend:latest ./frontend
+
+
