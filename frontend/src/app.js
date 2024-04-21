@@ -1,209 +1,103 @@
-
-/**
-  * @desc contains the main game logic here, including handling of usernames
-  * @param null
-  * @return null - game is running
-*/
 (function() {
     var P1 = 'X', P2 = 'O';
-    var socket = io.connect('/');
     var currentTurn;
     var playerType;
-    var groupID;
-    var board = [];
-    var username; 
+    var gameId;
+    var username;
 
-    //Trigged when user clicks on the START GAME
-    $('#start').on('click', function(){
-        username = $('#username').val().trim(); 
+    // Start a new game
+    $('#start').on('click', function() {
+        username = $('#username').val().trim();
         if (!username) {
             alert('Please enter a username.');
             return;
         }
-        socket.emit('startGame', {name: username}); 
-        playerType = P1;
+        $.post('/api/games', { name: username }, function(data) {
+            gameId = data.gameId;
+            playerType = P1;
+            currentTurn = P1;  // Start turn
+            alert('Game started. Your game ID is ' + gameId + '. Waiting for another player to join.');
+            checkGameState();
+        });
     });
 
-    //Triggerred when another user joined thee game
-    $('#join').on('click', function(){
-        groupID = $('#group').val();
-        username = $('#username').val().trim(); 
-        if(!groupID || !username){
+    // Join an existing game
+    $('#join').on('click', function() {
+        gameId = $('#group').val();
+        username = $('#username').val().trim();
+        if (!gameId || !username) {
             alert('Please enter the game ID and username.');
             return;
         }
-        socket.emit('joinGame', {name: username, group: groupID}); 
-        playerType = P2;
+        $.post('/api/games/' + gameId + '/join', { name: username }, function(data) {
+            playerType = P2;
+            currentTurn = P1;  // Game starts with player 1
+            alert('Joined game, you are Player 2.');
+            checkGameState();
+        }).fail(function(response) {
+            alert('Failed to join game: ' + response.responseText);
+        });
     });
 
-   
-    socket.on('new', function(data){
-        groupID = data.group;
-        $('.front-page').css('display', 'none');
-        $('.board').css('display', 'block');
-        $('#greeting').html('Group ' + groupID + ' - ' + data.name + 
-            '.<span id="disappear"> <br><br/> Your group ID is ' + data.group + '. Please ask your friend to join the game.</span>');
-        currentTurn = null;
-    });
+    // Function to periodically check the game state
+    function checkGameState() {
+        if (gameId) {
+            $.get('/api/games/' + gameId + '/state', function(data) {
+                updateGameUI(data);
+            }).fail(function() {
+                console.log('Error fetching game state.');
+            });
+        }
+    }
 
-    // Update UI for player 2 joining
-    socket.on('player2', function(data){
-        $('.front-page').css('display', 'none');
-        $('.board').css('display', 'block');
-        $('#greeting').text('Welcome ' + data.name);
-        currentTurn = false;
-        $('#turn').text('Waiting for your friend...');
-    }); 
+    setInterval(checkGameState, 1000);
 
-    // Update UI for player 1 after player 2 joins
-    socket.on('player1', function(){
-        $('.front-page').css('display', 'none');
-        $('.board').css('display', 'block');
-        $('#disappear').remove();
-        currentTurn = true;
-        $('#turn').text('It is your turn.');
-    });
+    // Update game UI based on current state
+    function updateGameUI(data) {
+        currentTurn = data.currentPlayer; // Update current turn based on server
 
-    // Handle turns and update UI
-    socket.on('toNext', function(data){
-        var opponentType = playerType == P1 ? P2 : P1;
-        $('#'+data.box).text(opponentType);
-        $('#'+data.box).prop('disabled', true);
-        var row = data.box.split('_')[1][0];
-        var col = data.box.split('_')[1][1];
-        board[row][col] = opponentType;
-        currentTurn = true;
-        $('#turn').text('It is your turn.');
-    });
+        // Clear the board first
+        $('.box').each(function(index) {
+            var row = Math.floor(index / 3);
+            var col = index % 3;
+            $(this).text(data.board[row][col]);  // Update each cell
+        });
 
-    // Error handling for room issues
-    socket.on('err', function(data){
-        alert(data.message);
-    });
-
-    // Handle game reset
-    socket.on('resetGame', function(){
-        
-        setTimeout(function() {
-            window.location.reload(true);
-        }, 100);
-    });
-
-    socket.on('endGame', function(data){
-        
-        if (data.message === 'Game Tied!') {
-            $('#turn').text(data.message);
-        } else if (data.winner === username) {
-            $('#turn').text('You win!');
+        // Update turn indicator or game status
+        if (data.gameState === 'finished') {
+            $('#turn').text('Game Over');
+            $('.box').off('click'); // Disable clicking if the game is over
         } else {
-            $('#turn').text('You lose!');
+            $('#turn').text(currentTurn === playerType ? 'Your turn' : 'Waiting for opponent');
         }
-        
-        $('.box').prop('disabled', true).off('click');
+    }
+
+    // Click event for making a move
+    $('.box').on('click', function() {
+        if (!$(this).text() && currentTurn === playerType) {
+            var boxId = $(this).attr('id');
+            var x = parseInt(boxId.charAt(7));
+            var y = parseInt(boxId.charAt(8));
+            var move = { player: playerType, x: x, y: y };
+
+            $.post('/api/games/' + gameId + '/move', move, function(data) {
+                updateGameUI(data);
+                checkGameState();  // Check for updates after move
+            }).fail(function(response) {
+                alert('Move failed: ' + response.responseText);
+            });
+        } else {
+            alert('It is not your turn or cell is occupied.');
+        }
     });
 
-    $('#reset').on('click', function(){
-        socket.emit('reset', {group: groupID});
+    // Reset or end game
+    $('#reset').on('click', function() {
+        if (!gameId) return;
+        $.post('/api/games/' + gameId + '/reset', function(data) {
+            $('.box').text('').off('click');
+            alert('Game has been reset.');
+            location.reload();  // Reload the page to start anew or rejoin
+        });
     });
-    
-
-    // Ensure game state is reset when the browser tab is closed
-    window.onbeforeunload = function(){
-        socket.emit('reset', {group: groupID});
-    };
-	//Create 3x3 matrices
-	for(var i=0; i<3; i++) {
-		board.push(['','','']);
-		for(var j=0; j<3; j++) {
-			$('#button_' + i + '' + j).on('click', function(){
-				//Check whether the player clicked on a button that is selected
-				if ($(this).prop('occupied')) {
-					alert('Select an empty square.');
-					return;
-				}
-				//Check whether another player has joined
-				if(currentTurn == null) {
-					alert('Your friend has not entered.');
-					return;
-				}
-				//Check whether which player's turn
-				if(!currentTurn) {
-					alert('It is not your turn.');
-					return;
-				}
-				var box = $(this).attr('id');
-				var turnObj = {
-					box: box,
-					group: groupID
-				};
-				//It's another player's turn now
-				socket.emit('nextTurn', turnObj);
-				var row = box.split('_')[1][0];
-				var col = box.split('_')[1][1];
-				board[row][col] = playerType;
-				currentTurn = false;
-				$('#turn').text('Waiting for your friend...');
-				$(this).text(playerType);
-				$(this).prop('occupied', true);
-				var tied = true;
-				//Check row & column
-				for(var i = 0; i < 3; i++){
-			    	if(board[i][0] == playerType && board[i][1] == playerType && board[i][2] == playerType ||
-			    		board[0][i] == playerType && board[1][i] == playerType && board[2][i] == playerType) {
-			        	tied = reportWin();
-			      	} 
-			    }
-			    //Check diagonal
-			    if(board[0][0] == playerType && board[1][1] == playerType && board[2][2] == playerType ||
-			    	board[2][0] == playerType && board[1][1] == playerType && board[0][2] == playerType) {
-			      	tied = reportWin();
-			    } 
-				for(var i = 0; i < 3; i++){
-					for(var j = 0; j < 3; j++){
-						if(board[i][j] == ''){
-							tied = false;
-						}
-					}	
-				}
-				checkTie(tied);
-			});
-		}
-	}
-	/**
-	  * @desc check whether it's a tie
-	  * @param bool - is a tie?
-	  * @return null - text changed to Game Tied
-	*/
-    function checkTie() {
-        for (var i = 0; i < board.length; i++) {
-            for (var j = 0; j < board[i].length; j++) {
-                if (board[i][j] === '') {
-                    return false; 
-                }
-            }
-        }
-        // If no cells are empty, it's a tie
-        socket.emit('gameOver', { group: groupID, message: 'Game Tied!' });
-        $('#turn').text('Game Tied!');
-        endGame(); 
-        return true;
-    }
-	/**
-	  * @desc report who is the winner
-	  * @param null
-	  * @return null - text changed to show current player is winner
-	*/
-
-    function reportWin(){
-        
-        socket.emit('gameOver', { group: groupID, winner: username });
-        $('#turn').text('You win!');
-        endGame(); // Call endGame to handle the UI updates
-    }
-
-    function endGame(){
-        
-        $('.box').prop('disabled', true).off('click');
-    }
-
 })();
