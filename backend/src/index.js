@@ -1,64 +1,101 @@
-var express = require('express');
-var bodyParser = require('body-parser');
-var path = require('path'); // Import path module
-var app = express();
-var server = require('http').Server(app);
-var io = require('socket.io')(server);
-var groups = 1;
-
-app.use(bodyParser.urlencoded({ extended: true }));
-
-var cors = require('cors');
-app.use(cors()); 
-
-
-//Begins connect here
-io.on('connection', function(socket){
-	//When player create a new game
-	socket.on('startGame', function(data){
-		socket.join(groups);
-		socket.emit('new', {name: data.name, group: groups});
-		groups++;
-	});
-	//When another player enter an exist game
-	socket.on('joinGame', function(data){
-		var group = io.nsps['/'].adapter.rooms[data.group];
-		if (group && group.length == 1){
-			socket.join(data.group);
-			socket.broadcast.to(data.group).emit('player1', {});
-			socket.emit('player2', {name: data.name, group: data.group })
-		} else if (group && group.length > 1){
-			socket.emit('err', {message: 'Room is full, please start a new game'});
-		} else {
-			socket.emit('err', {message: 'Invalid ID!'});
-		}
-	});
-	//To show it's the current player turn
-	socket.on('nextTurn', function(data){
-		socket.broadcast.to(data.group).emit('toNext', {
-			box: data.box,
-			group: data.group
-		});
-	});
-	//When there is a winner
-	socket.on('gameOver', function(data){
-		// Check if it's a win or a tie
-		if (data.winner) {
-			// It's a win, notify the winner and the loser
-			socket.emit('endGame', { winner: data.winner, message: 'You win!' });
-			socket.to(data.group).emit('endGame', { winner: data.winner, message: 'You lose!' });
-		} else {
-			// It's a tie, notify all clients in the group
-			io.in(data.group).emit('endGame', { message: data.message });
-		}
-	});
-	//When one of the user is leaving or clicked reset
-	socket.on('reset', function(data){
-		// This will emit to all clients in the group, including the sender
-		io.in(data.group).emit('resetGame');
-	});
-})
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const app = express();
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`listening on ${PORT}`);
+
+app.use(bodyParser.json()); // Use JSON body parsing
+app.use(cors()); // Enable CORS for all origins
+
+let gameIdCounter = 1;
+const games = {};
+
+// Create a new game and return game ID
+app.post('/api/games', (req, res) => {
+    const gameId = gameIdCounter++;
+    games[gameId] = {
+        board: Array(3).fill(null).map(() => Array(3).fill('')),
+        currentPlayer: 'X',
+        gameState: 'waiting' // 'waiting', 'ongoing', 'finished'
+    };
+    res.json({ gameId: gameId, message: "Game created, waiting for another player." });
+});
+
+// Join an existing game
+app.post('/api/games/:gameId/join', (req, res) => {
+    const gameId = parseInt(req.params.gameId);
+    const game = games[gameId];
+    if (!game) {
+        return res.status(404).send({ message: "Game not found." });
+    }
+    if (game.gameState !== 'waiting') {
+        return res.status(400).send({ message: "Game is already in progress or finished." });
+    }
+    game.gameState = 'ongoing';
+    res.json({ message: "Joined game, game starts.", gameId: gameId });
+});
+
+// Make a move
+app.post('/api/games/:gameId/move', (req, res) => {
+    const gameId = parseInt(req.params.gameId);
+    const { player, x, y } = req.body;
+    const game = games[gameId];
+    if (!game || game.gameState !== 'ongoing') {
+        return res.status(404).send({ message: "Game not found or not in progress." });
+    }
+    if (game.board[x][y] !== '') {
+        return res.status(400).send({ message: "Cell is already occupied." });
+    }
+    if (game.currentPlayer !== player) {
+        return res.status(400).send({ message: "It's not your turn." });
+    }
+
+    // Update the board
+    game.board[x][y] = player;
+    // Check if there is a winner or the game is tied
+    if (checkWinner(game.board, player)) {
+        game.gameState = 'finished';
+        res.json({ winner: player, board: game.board });
+    } else if (isBoardFull(game.board)) {
+        game.gameState = 'finished';
+        res.json({ message: "Game tied.", board: game.board });
+    } else {
+        game.currentPlayer = player === 'X' ? 'O' : 'X';
+        res.json({ board: game.board, currentPlayer: game.currentPlayer });
+    }
+});
+
+// Endpoint to get the current state of the game
+app.get('/api/games/:gameId/state', (req, res) => {
+    const gameId = parseInt(req.params.gameId);
+    const game = games[gameId];
+    if (!game) {
+        return res.status(404).json({ message: "Game not found." });
+    }
+    res.json({
+        board: game.board,
+        currentPlayer: game.currentPlayer,
+        gameState: game.gameState
+    });
+});
+
+
+function checkWinner(board, player) {
+    // Horizontal, vertical, and diagonal checks
+    return (
+        [0, 1, 2].some(index => 
+            (board[index][0] === player && board[index][1] === player && board[index][2] === player) ||
+            (board[0][index] === player && board[1][index] === player && board[2][index] === player)
+        ) ||
+        (board[0][0] === player && board[1][1] === player && board[2][2] === player) ||
+        (board[2][0] === player && board[1][1] === player && board[0][2] === player)
+    );
+}
+
+function isBoardFull(board) {
+    return board.every(row => row.every(cell => cell !== ''));
+}
+
+app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
 });
